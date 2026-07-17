@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -61,5 +62,29 @@ func TestRunCollectsCandidatesWithFrozenNormalizer(t *testing.T) {
 	}
 	if !strings.Contains(string(report), "\troute\t40\t0\t") {
 		t.Fatalf("report did not select the frozen route template:\n%s", report)
+	}
+}
+
+func TestRunPipeline(t *testing.T) {
+	input := bytes.NewReader([]byte("/products/100\tmiss\n/products/101\thit\n"))
+	var output bytes.Buffer
+	err := runPipeline(options{
+		maxClusters:     9,
+		exactClusters:   1,
+		minSamples:      1,
+		cacheMissColumn: 1,
+	}, input, &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := output.String()
+	if !strings.Contains(report, "cluster_id\tkind\trequests\tcache_misses") {
+		t.Fatalf("missing report header:\n%s", report)
+	}
+	if !strings.Contains(report, "\troute\t2\t1\t") {
+		t.Fatalf("missing route totals:\n%s", report)
+	}
+	if !strings.Contains(report, "# requests=2 cache_misses=1") {
+		t.Fatalf("missing summary:\n%s", report)
 	}
 }

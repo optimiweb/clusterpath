@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/optimiweb/clusterpath"
+	"github.com/optimiweb/clusterpath/cmd/internal/stream"
 )
 
 type options struct {
@@ -54,7 +55,7 @@ func main() {
 	}
 }
 
-func run(opts options) error {
+func run(opts options) (err error) {
 	if opts.input == "-" {
 		return fmt.Errorf("-in must be a seekable file because metriccluster uses two passes")
 	}
@@ -74,13 +75,27 @@ func run(opts options) error {
 		return fmt.Errorf("-in must be a regular seekable file")
 	}
 
+	output, err := stream.OpenOutput(opts.output, os.Stdout)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := output.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+
+	return runPipeline(opts, input, output)
+}
+
+func runPipeline(opts options, input io.ReadSeeker, output io.Writer) error {
 	m := clusterpath.NewMetricClusterer(clusterpath.MetricConfig{
 		MaxClusters:   opts.maxClusters,
 		ExactClusters: opts.exactClusters,
 		MaxCandidates: opts.maxCandidates,
 		MinSamples:    opts.minSamples,
 	})
-	if err := scan(input, func(line []byte) error {
+	if err := stream.ScanLines(input, func(line []byte) error {
 		url, _, err := parseRecord(line, opts.cacheMissColumn)
 		if err != nil {
 			return err
@@ -95,7 +110,7 @@ func run(opts options) error {
 		return fmt.Errorf("rewind input after training: %w", err)
 	}
 
-	if err := scan(input, func(line []byte) error {
+	if err := stream.ScanLines(input, func(line []byte) error {
 		url, miss, err := parseRecord(line, opts.cacheMissColumn)
 		if err != nil {
 			return err
@@ -111,7 +126,7 @@ func run(opts options) error {
 	}
 
 	counts := make(map[int]totals)
-	if err := scan(input, func(line []byte) error {
+	if err := stream.ScanLines(input, func(line []byte) error {
 		url, miss, err := parseRecord(line, opts.cacheMissColumn)
 		if err != nil {
 			return err
@@ -128,15 +143,10 @@ func run(opts options) error {
 		return fmt.Errorf("replay: %w", err)
 	}
 
-	output, closeOutput, err := openOutput(opts.output)
-	if err != nil {
-		return err
-	}
 	if err := writeReport(output, m.Clusters(), counts); err != nil {
-		_ = closeOutput()
 		return err
 	}
-	return closeOutput()
+	return nil
 }
 
 func parseRecord(line []byte, cacheMissColumn int) ([]byte, bool, error) {
@@ -163,28 +173,6 @@ func parseCacheMiss(value []byte) (bool, error) {
 	default:
 		return false, fmt.Errorf("invalid cache-miss value %q", value)
 	}
-}
-
-func scan(input io.Reader, consume func([]byte) error) error {
-	scanner := bufio.NewScanner(input)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		if err := consume(scanner.Bytes()); err != nil {
-			return err
-		}
-	}
-	return scanner.Err()
-}
-
-func openOutput(path string) (io.Writer, func() error, error) {
-	if path == "-" {
-		return os.Stdout, func() error { return nil }, nil
-	}
-	file, err := os.Create(path)
-	if err != nil {
-		return nil, func() error { return nil }, err
-	}
-	return file, file.Close, nil
 }
 
 func writeReport(output io.Writer, clusters []clusterpath.MetricCluster, counts map[int]totals) error {

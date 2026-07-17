@@ -24,6 +24,7 @@ import (
 	"sort"
 
 	"github.com/optimiweb/clusterpath"
+	"github.com/optimiweb/clusterpath/cmd/internal/stream"
 )
 
 type options struct {
@@ -40,15 +41,16 @@ type options struct {
 
 func main() {
 	var opts options
+	defaults := clusterpath.DefaultConfig()
 	flag.StringVar(&opts.input, "in", "-", "input path file, or - for stdin")
 	flag.StringVar(&opts.output, "out", "-", "normalized output file, or - for stdout")
 	flag.StringVar(&opts.report, "report", "", "optional template count report file, or - for stderr")
 	flag.BoolVar(&opts.twoPass, "two-pass", true, "learn once, freeze, then emit stable templates")
-	flag.IntVar(&opts.maxBuckets, "max-buckets", 4096, "maximum in-memory structural buckets")
-	flag.UintVar(&opts.minSamples, "min-samples", 32, "samples required before learned decisions")
-	flag.UintVar(&opts.distinctLimit, "distinct-limit", 64, "absolute distinct-value threshold")
-	flag.Float64Var(&opts.highCardRatio, "high-card-ratio", 0.5, "distinct/total ratio above which a position is masked")
-	flag.IntVar(&opts.signaturePrefix, "signature-prefix", 1, "leading literal segments folded into the bucket key (-1 = group by shape only)")
+	flag.IntVar(&opts.maxBuckets, "max-buckets", defaults.MaxBuckets, "maximum in-memory structural buckets")
+	flag.UintVar(&opts.minSamples, "min-samples", uint(defaults.MinSamples), "samples required before learned decisions")
+	flag.UintVar(&opts.distinctLimit, "distinct-limit", uint(defaults.DistinctLimit), "absolute distinct-value threshold")
+	flag.Float64Var(&opts.highCardRatio, "high-card-ratio", defaults.HighCardRatio, "distinct/total ratio above which a position is masked")
+	flag.IntVar(&opts.signaturePrefix, "signature-prefix", defaults.SignaturePrefix, "leading literal segments folded into the bucket key (-1 = group by shape only)")
 	flag.Parse()
 
 	if err := run(opts); err != nil {
@@ -57,21 +59,55 @@ func main() {
 	}
 }
 
-func run(opts options) error {
+type lineSource func(func([]byte) error) error
+
+func run(opts options) (err error) {
 	if opts.twoPass && opts.input == "-" {
 		return fmt.Errorf("-two-pass requires a seekable -in file; use -two-pass=false for stdin")
 	}
-	c := clusterpath.New(clusterpath.Config{
-		MaxBuckets:      opts.maxBuckets,
-		MinSamples:      uint32(opts.minSamples),
-		DistinctLimit:   uint16(opts.distinctLimit),
-		HighCardRatio:   opts.highCardRatio,
-		SignaturePrefix: opts.signaturePrefix,
-	})
+
+	source := fileSource(opts.input)
+	if opts.input == "-" {
+		source = func(consume func([]byte) error) error {
+			return stream.ScanLines(os.Stdin, consume)
+		}
+	}
+	output, err := stream.OpenOutput(opts.output, os.Stdout)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := output.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+
+	var report io.WriteCloser
+	if opts.report != "" {
+		report, err = stream.OpenOutput(opts.report, os.Stderr)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if closeErr := report.Close(); err == nil && closeErr != nil {
+				err = closeErr
+			}
+		}()
+	}
+
+	return runPipeline(opts, source, output, report)
+}
+
+func runPipeline(opts options, source lineSource, output io.Writer, report io.Writer) error {
+	cfg, err := configFromOptions(opts)
+	if err != nil {
+		return err
+	}
+	c := clusterpath.New(cfg)
 
 	if opts.twoPass {
 		learnDst := make([]byte, 0, 1024)
-		if err := scanFile(opts.input, func(line []byte) error {
+		if err := source(func(line []byte) error {
 			learnDst = c.Normalize(learnDst[:0], line)
 			return nil
 		}); err != nil {
@@ -80,15 +116,12 @@ func run(opts options) error {
 		c.Freeze()
 	}
 
-	output, closeOutput, err := openOutput(opts.output)
-	if err != nil {
-		return err
-	}
-	defer closeOutput()
 	buffered := bufio.NewWriterSize(output, 256*1024)
-	defer buffered.Flush()
 
-	counts := make(map[string]uint64)
+	var counts map[string]uint64
+	if report != nil {
+		counts = make(map[string]uint64)
+	}
 	var emitted uint64
 	dst := make([]byte, 0, 1024)
 	process := func(line []byte) error {
@@ -103,60 +136,51 @@ func run(opts options) error {
 		if err := buffered.WriteByte('\n'); err != nil {
 			return err
 		}
-		if opts.report != "" {
+		if report != nil {
 			counts[string(dst)]++
 		}
 		emitted++
 		return nil
 	}
-	if opts.input == "-" {
-		err = scanReader(os.Stdin, process)
-	} else {
-		err = scanFile(opts.input, process)
-	}
-	if err != nil {
+	if err := source(process); err != nil {
 		return err
 	}
 	if err := buffered.Flush(); err != nil {
 		return err
 	}
-	if opts.report != "" {
-		if err := writeReport(opts.report, counts, emitted, c.Stats()); err != nil {
+	if report != nil {
+		if err := writeReport(report, counts, emitted, c.Stats()); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func scanFile(path string, consume func([]byte) error) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
+func configFromOptions(opts options) (clusterpath.Config, error) {
+	if uint64(opts.minSamples) > uint64(^uint32(0)) {
+		return clusterpath.Config{}, fmt.Errorf("-min-samples must be at most %d", ^uint32(0))
 	}
-	defer file.Close()
-	return scanReader(file, consume)
+	if uint64(opts.distinctLimit) > uint64(^uint16(0)) {
+		return clusterpath.Config{}, fmt.Errorf("-distinct-limit must be at most %d", ^uint16(0))
+	}
+	return clusterpath.Config{
+		MaxBuckets:      opts.maxBuckets,
+		MinSamples:      uint32(opts.minSamples),
+		DistinctLimit:   uint16(opts.distinctLimit),
+		HighCardRatio:   opts.highCardRatio,
+		SignaturePrefix: opts.signaturePrefix,
+	}, nil
 }
 
-func scanReader(reader io.Reader, consume func([]byte) error) error {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		if err := consume(scanner.Bytes()); err != nil {
+func fileSource(path string) lineSource {
+	return func(consume func([]byte) error) error {
+		file, err := os.Open(path)
+		if err != nil {
 			return err
 		}
+		defer file.Close()
+		return stream.ScanLines(file, consume)
 	}
-	return scanner.Err()
-}
-
-func openOutput(path string) (io.Writer, func(), error) {
-	if path == "-" {
-		return os.Stdout, func() {}, nil
-	}
-	file, err := os.Create(path)
-	if err != nil {
-		return nil, func() {}, err
-	}
-	return file, func() { _ = file.Close() }, nil
 }
 
 type reportRow struct {
@@ -164,7 +188,7 @@ type reportRow struct {
 	count    uint64
 }
 
-func writeReport(path string, counts map[string]uint64, emitted uint64, stats clusterpath.Stats) error {
+func writeReport(writer io.Writer, counts map[string]uint64, emitted uint64, stats clusterpath.Stats) error {
 	rows := make([]reportRow, 0, len(counts))
 	for template, count := range counts {
 		rows = append(rows, reportRow{template: template, count: count})
@@ -176,17 +200,6 @@ func writeReport(path string, counts map[string]uint64, emitted uint64, stats cl
 		return rows[i].count > rows[j].count
 	})
 
-	var writer io.Writer = os.Stderr
-	var file *os.File
-	var err error
-	if path != "-" {
-		file, err = os.Create(path)
-		if err != nil {
-			return err
-		}
-		defer file.Close()
-		writer = file
-	}
 	buffered := bufio.NewWriter(writer)
 	for _, row := range rows {
 		if _, err := fmt.Fprintf(buffered, "%d\t%s\n", row.count, row.template); err != nil {

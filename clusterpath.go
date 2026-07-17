@@ -155,6 +155,10 @@ type Clusterer struct {
 // setting. A negative SignaturePrefix (see [GroupByShape]) disables literal-
 // prefix folding.
 func New(cfg Config) *Clusterer {
+	return newClusterer(resolveConfig(cfg))
+}
+
+func resolveConfig(cfg Config) Config {
 	defaults := DefaultConfig()
 	if cfg.MaxBuckets <= 0 {
 		cfg.MaxBuckets = defaults.MaxBuckets
@@ -186,6 +190,10 @@ func New(cfg Config) *Clusterer {
 	if cfg.Seed == 0 {
 		cfg.Seed = defaults.Seed
 	}
+	return cfg
+}
+
+func newClusterer(cfg Config) *Clusterer {
 	return &Clusterer{
 		cache: newBucketCache(cfg.MaxBuckets),
 		decisions: decisionConfig{
@@ -290,25 +298,17 @@ func NewSharded(n int, cfg Config) *Sharded {
 	if n < 1 {
 		n = 1
 	}
-	if cfg.Seed == 0 {
-		cfg.Seed = defaultSeed
-	}
-	prefix := cfg.SignaturePrefix
-	if prefix == 0 {
-		prefix = 1
-	} else if prefix < 0 {
-		prefix = 0
-	}
+	cfg = resolveConfig(cfg)
 	s := &Sharded{
 		shards:          make([]*Clusterer, n),
 		seed:            cfg.Seed,
-		signaturePrefix: prefix,
+		signaturePrefix: cfg.SignaturePrefix,
 		scratch: sync.Pool{New: func() any {
 			return new(parsedURL)
 		}},
 	}
 	for i := range s.shards {
-		s.shards[i] = New(cfg)
+		s.shards[i] = newClusterer(cfg)
 	}
 	return s
 }

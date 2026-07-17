@@ -58,6 +58,23 @@ func TestConfigClampsSketchAndRatioLimits(t *testing.T) {
 	}
 }
 
+func TestNewShardedUsesResolvedConfig(t *testing.T) {
+	s := NewSharded(2, Config{
+		DistinctLimit:   ^uint16(0),
+		HighCardRatio:   2,
+		SignaturePrefix: GroupByShape,
+	})
+	if s.seed != defaultSeed || s.signaturePrefix != 0 {
+		t.Fatalf("shard routing config = seed:%x prefix:%d", s.seed, s.signaturePrefix)
+	}
+	if got := s.At(0).decisions.distinctLimit; got != maxDistinctLimit {
+		t.Fatalf("distinct limit = %d, want %d", got, maxDistinctLimit)
+	}
+	if got := s.At(0).decisions.ratioThreshold; got != ratioScale {
+		t.Fatalf("ratio threshold = %d, want %d", got, ratioScale)
+	}
+}
+
 func TestEmbeddedFingerprintClustering(t *testing.T) {
 	c := New(Config{
 		MaxBuckets:     16,
