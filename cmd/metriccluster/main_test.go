@@ -88,3 +88,31 @@ func TestRunPipeline(t *testing.T) {
 		t.Fatalf("missing summary:\n%s", report)
 	}
 }
+
+func TestRunWindowedPipelineKeepsDictionaryVersionsSeparate(t *testing.T) {
+	input := strings.NewReader("/products/100\n/products/101\n/products/102\n/products/103\n")
+	var output bytes.Buffer
+	err := runWindowedPipeline(options{
+		maxClusters:     9,
+		exactClusters:   1,
+		minSamples:      1,
+		cacheMissColumn: -1,
+		windowSize:      2,
+	}, input, &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := output.String()
+	if !strings.Contains(report, "dictionary_version\tcluster_id\tkind\thits") {
+		t.Fatalf("missing streaming report header:\n%s", report)
+	}
+	if !strings.Contains(report, "1\t5\tfallback\t2\t0\t") {
+		t.Fatalf("first window was not assigned to the initial fallback dictionary:\n%s", report)
+	}
+	if !strings.Contains(report, "2\t8\troute\t2\t0\t0.000000\troute:/products/{id}") {
+		t.Fatalf("second window was not assigned to the rebalanced route dictionary:\n%s", report)
+	}
+	if !strings.Contains(report, "# requests=4 cache_misses=0 dictionary_versions=2") {
+		t.Fatalf("unexpected streaming summary:\n%s", report)
+	}
+}

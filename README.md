@@ -141,6 +141,28 @@ The command reads its input three times: it trains normalization, selects a
 metric dictionary with the frozen model, then assigns every URL and writes
 aggregate counts. Input must be a seekable regular file.
 
+### Online windowed CLI report
+
+For a single-pass stream, pass `-window-size`. The command learns templates
+online and rebalances the 96-ID dictionary after each window. Its report keeps
+each dictionary version separate, since the same cluster ID may represent a
+different route after a later rebalance:
+
+```sh
+cat requests.tsv | go run ./cmd/metriccluster \
+  -in - \
+  -window-size 100000 \
+  -cache-miss-column 1 \
+  -out windowed_metric_clusters.tsv
+```
+
+The output has one row for every active ID in every dictionary version, with `hits`
+and optional cache-miss totals. The initial window uses only fallback IDs while
+the command gathers candidates; subsequent windows use the dictionary selected
+from the preceding window. This mode is appropriate when each version is
+stored with its reporting window. Use a persisted frozen dictionary for stable
+IDs across all windows.
+
 For tab-separated input containing a cache-miss flag (`0`/`1`, `hit`/`miss`,
 or `false`/`true`), pass its zero-based column number:
 
