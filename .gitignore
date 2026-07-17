@@ -1,0 +1,25 @@
+# Generated synthetic datasets (reproducible via scripts/genurls.go)
+synthetic_*.paths
+
+# CLI / demo outputs
+normalized*.paths
+clusters*.tsv
+simhash*.tsv
+metric_clusters.tsv
+
+# Local URL corpora and reports may contain credentials or personal data.
+*_urls.txt
+*_normalized.urls
+*_clusters.tsv
+*_urls.zip
+
+# Profiles and traces
+*.prof
+*.pprof
+*.trace
+*.heapsnapshot
+
+# Go build artifacts
+*.test
+/clusterpath
+/cmd/clusterpath/clusterpath
