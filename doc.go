@@ -60,8 +60,8 @@
 // A [Clusterer] is not safe for concurrent use. For parallel ingestion, use
 // [Sharded]: it owns one independent Clusterer per worker. Route each URL with
 // [Sharded.Shard] (safe for concurrent use) and process it on the single
-// goroutine that owns [Sharded.At](shard). Because a Clusterer is
-// allocation-free and lock-free, throughput scales linearly with cores.
+// goroutine that owns [Sharded.At](shard). Clusterers share no mutable model
+// state, so workers can process their assigned URLs independently.
 //
 // # Tuning
 //

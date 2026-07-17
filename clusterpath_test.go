@@ -28,8 +28,8 @@ func TestCanonicalizeAndMaskKnownTypes(t *testing.T) {
 			"/users/{uuid}",
 		},
 		{
-			"/landing/item?fbbaid=1&csp&eff_cpt=2&frz-flush=true&gad_source=1&gbraid=x&keep=yes&t=42",
-			"/landing/item?keep=yes&t=42",
+			"/landing/item?utm_source=search&gclid=123&session=abc&token=secret&sort=price",
+			"/landing/item?sort=price",
 		},
 	}
 	for _, test := range tests {
@@ -37,6 +37,24 @@ func TestCanonicalizeAndMaskKnownTypes(t *testing.T) {
 		if got != test.want {
 			t.Errorf("Normalize(%q) = %q, want %q", test.input, got, test.want)
 		}
+	}
+}
+
+func TestDefaultDropParamsAreGeneric(t *testing.T) {
+	c := New(Config{})
+	got := string(c.Normalize(nil, []byte("/search?fbbaid=1&csp=2&gad_source=3&utm_campaign=spring")))
+	if got != "/search?csp=2&fbbaid=1&gad_source=3" {
+		t.Fatalf("default drop params = %q", got)
+	}
+}
+
+func TestConfigClampsSketchAndRatioLimits(t *testing.T) {
+	c := New(Config{DistinctLimit: ^uint16(0), HighCardRatio: 2})
+	if c.decisions.distinctLimit != maxDistinctLimit {
+		t.Fatalf("distinct limit = %d, want %d", c.decisions.distinctLimit, maxDistinctLimit)
+	}
+	if c.decisions.ratioThreshold != ratioScale {
+		t.Fatalf("ratio threshold = %d, want %d", c.decisions.ratioThreshold, ratioScale)
 	}
 }
 
@@ -195,6 +213,21 @@ func TestShardedStructuralRouting(t *testing.T) {
 	b = s.Shard([]byte("https://example.test/products/999"))
 	if a != b {
 		t.Fatalf("canonical hosts routed to shards %d and %d", a, b)
+	}
+}
+
+func TestShardedShardConcurrent(t *testing.T) {
+	s := NewSharded(8, Config{MaxBuckets: 4})
+	raw := []byte("https://example.test/products/123")
+	want := s.Shard(raw)
+	results := make(chan int, 64)
+	for i := 0; i < 64; i++ {
+		go func() { results <- s.Shard(raw) }()
+	}
+	for i := 0; i < 64; i++ {
+		if got := <-results; got != want {
+			t.Fatalf("concurrent shard = %d, want %d", got, want)
+		}
 	}
 }
 

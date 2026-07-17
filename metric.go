@@ -177,6 +177,7 @@ type MetricClusterer struct {
 	fallbacks  [metricFallbackCount]MetricCluster
 	total      MetricStats
 	scratch    []byte
+	parsed     parsedURL
 }
 
 // NewMetricClusterer returns a tenant-scoped metric clusterer. A tenant should
@@ -240,7 +241,7 @@ func (m *MetricClusterer) FreezeNormalizer() {
 func (m *MetricClusterer) Observe(raw []byte, cacheMiss bool) MetricCluster {
 	m.scratch = m.normalizer.Normalize(m.scratch[:0], raw)
 	route := metricRouteKey(m.scratch)
-	family, fallback := metricFamily(m.scratch)
+	family, fallback := metricFamilyParsed(m.scratch, &m.parsed)
 
 	addMetric(&m.total, cacheMiss)
 	m.routes.record(route, route, family, cacheMiss)
@@ -255,7 +256,7 @@ func (m *MetricClusterer) Observe(raw []byte, cacheMiss bool) MetricCluster {
 func (m *MetricClusterer) Assign(raw []byte) MetricCluster {
 	m.scratch = m.normalizer.Apply(m.scratch[:0], raw)
 	route := metricRouteKey(m.scratch)
-	family, fallback := metricFamily(m.scratch)
+	family, fallback := metricFamilyParsed(m.scratch, &m.parsed)
 	return m.assignment(route, family, fallback)
 }
 
@@ -441,9 +442,13 @@ func metricRouteKey(template []byte) string {
 
 func metricFamily(template []byte) (string, int) {
 	var parsed parsedURL
-	parseURL(template, &parsed)
+	return metricFamilyParsed(template, &parsed)
+}
 
-	fallback := metricResource(&parsed)
+func metricFamilyParsed(template []byte, parsed *parsedURL) (string, int) {
+	parseURL(template, parsed)
+
+	fallback := metricResource(parsed)
 	first := ""
 	if parsed.segmentCount > 0 {
 		segment := parsed.raw[parsed.segments[0].full.start:parsed.segments[0].full.end]

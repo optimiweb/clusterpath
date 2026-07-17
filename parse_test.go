@@ -47,6 +47,7 @@ func TestClassify(t *testing.T) {
 		{"43icxoshgjnh", classRandom},    // digits clustered at front, few transitions
 		{"1azayhtvfgtjfxk", classRandom}, // leading digit run
 		{"formation-master-2026", classLiteral},
+		{"fedec-decade-2024", classLiteral},
 		{"bac2024", classLiteral}, // short mixed token stays literal (slug-like)
 		{"iphone13", classLiteral},
 		{"event", classLiteral},
@@ -58,13 +59,15 @@ func TestClassify(t *testing.T) {
 	}
 }
 
-func TestSplitExtension(t *testing.T) {
+func TestParseURLSplitsExtension(t *testing.T) {
 	raw := []byte("ca508a0b52086307ea926f194c702566.html")
-	stem, ext := splitExtension(raw, span{0, len(raw)})
-	if got := string(raw[stem.start:stem.end]); got != "ca508a0b52086307ea926f194c702566" {
+	var parsed parsedURL
+	parseURL(raw, &parsed)
+	segment := parsed.segments[0]
+	if got := string(raw[segment.stem.start:segment.stem.end]); got != "ca508a0b52086307ea926f194c702566" {
 		t.Fatalf("stem = %q", got)
 	}
-	if got := string(raw[ext.start:ext.end]); got != "html" {
+	if got := string(raw[segment.ext.start:segment.ext.end]); got != "html" {
 		t.Fatalf("ext = %q", got)
 	}
 }
@@ -75,12 +78,15 @@ func TestBuildFingerprintDetection(t *testing.T) {
 		want  bool
 	}{
 		{"264.chunk-daf1ac8cb497daae.js", true},
-		{"vis-fo_550e8400-e29b-41d4-a716-446655440000", true},
+		{"vis-fo_550e8400-e29b-41d4-a716-446655440000.js", true},
+		{"vis-fo_550e8400-e29b-41d4-a716-446655440000", false},
 		{"product-deadbeefdeadbeef.html", false},
 	} {
 		raw := []byte(test.value)
-		stem, ext := splitExtension(raw, span{0, len(raw)})
-		if got := hasSegmentFingerprint(raw, stem, ext); got != test.want {
+		var parsed parsedURL
+		parseURL(raw, &parsed)
+		segment := parsed.segments[0]
+		if got := hasSegmentFingerprint(raw, segment.stem, segment.ext); got != test.want {
 			t.Errorf("hasSegmentFingerprint(%q) = %t, want %t", test.value, got, test.want)
 		}
 	}

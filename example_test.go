@@ -50,7 +50,7 @@ func ExampleClusterer_Normalize() {
 }
 
 // Sharding routes every URL of the same structural shape to the same worker, so
-// per-shard models stay coherent while processing runs lock-free across cores.
+// per-shard models stay coherent while workers process independently.
 func ExampleSharded() {
 	s := clusterpath.NewSharded(8, clusterpath.DefaultConfig())
 

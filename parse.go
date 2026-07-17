@@ -225,23 +225,3 @@ func parseQuery(raw []byte, start, end int, p *parsedURL) {
 		start = partEnd + 1
 	}
 }
-
-func splitExtension(raw []byte, full span) (span, span) {
-	dot := -1
-	for i := full.end - 1; i > full.start; i-- {
-		if raw[i] == '.' {
-			dot = i
-			break
-		}
-	}
-	if dot < 0 || full.end-dot-1 > 8 {
-		return full, span{}
-	}
-	for i := dot + 1; i < full.end; i++ {
-		c := raw[i]
-		if !isASCIILetter(c) && !isDigit(c) {
-			return full, span{}
-		}
-	}
-	return span{full.start, dot}, span{dot + 1, full.end}
-}

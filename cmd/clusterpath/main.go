@@ -70,8 +70,9 @@ func run(opts options) error {
 	})
 
 	if opts.twoPass {
+		learnDst := make([]byte, 0, 1024)
 		if err := scanFile(opts.input, func(line []byte) error {
-			c.Normalize(nil, line)
+			learnDst = c.Normalize(learnDst[:0], line)
 			return nil
 		}); err != nil {
 			return fmt.Errorf("learn: %w", err)

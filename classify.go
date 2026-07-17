@@ -31,14 +31,14 @@ func analyzeParsed(p *parsedURL, seed uint64, computeValues bool) {
 // extension guard prevents product slugs that happen to end in hexadecimal text
 // from being split into a more specific template.
 func hasSegmentFingerprint(raw []byte, stem, ext span) bool {
-	start, class, ok := fingerprintSuffix(raw, stem)
+	_, _, ok := fingerprintSuffix(raw, stem)
 	if !ok {
 		return false
 	}
 	if ext.len() != 0 && isBuildExtension(raw[ext.start:ext.end]) {
 		return true
 	}
-	return class == classUUID && hasASCIIPrefix(raw[stem.start:start], "vis-fo_")
+	return false
 }
 
 func fingerprintSuffix(raw []byte, stem span) (int, tokenClass, bool) {
@@ -68,13 +68,6 @@ func isFingerprintDelimiter(c byte) bool {
 func isBuildExtension(ext []byte) bool {
 	return equalFoldString(ext, "js") || equalFoldString(ext, "css") ||
 		equalFoldString(ext, "woff") || equalFoldString(ext, "woff2")
-}
-
-func hasASCIIPrefix(b []byte, prefix string) bool {
-	if len(b) < len(prefix) {
-		return false
-	}
-	return equalFoldString(b[:len(prefix)], prefix)
 }
 
 // segmentSkeletonHash recognizes stable literal text around decimal runs without
@@ -145,6 +138,7 @@ func classifyAndHash(full []byte, stemLen int, seed uint64) (tokenClass, uint64)
 			lastKind = 2
 		case c == '-' || c == '_' || c == '%' || c == '+' || c == ',' || c == '~':
 			separators++
+			allHex = false
 		default:
 			allHex = false
 		}

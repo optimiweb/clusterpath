@@ -1,5 +1,10 @@
 package clusterpath
 
+import (
+	"math"
+	"sync"
+)
+
 const defaultSeed uint64 = 0x243f6a8885a308d3
 
 // GroupByShape is a SignaturePrefix value that disables literal-prefix folding
@@ -8,6 +13,9 @@ const defaultSeed uint64 = 0x243f6a8885a308d3
 // lets the long tail of low-frequency families cross MinSamples and collapse;
 // low-cardinality positions (sections, enums) still render as literals.
 const GroupByShape = -1
+
+// maxDistinctLimit is the largest non-saturated estimate from bitmap256.
+const maxDistinctLimit uint16 = 1420
 
 // Config controls the fixed-memory cache and online cardinality decisions.
 // Zero values select defaults. A non-nil empty DropParams disables the default
@@ -24,8 +32,8 @@ type Config struct {
 	// leaves, which preserves taxonomy while still reducing cardinality.
 	HighCardRatio float64
 	// DistinctLimit masks a position once its estimated distinct count
-	// crosses this absolute bound, regardless of ratio. Keep it above the
-	// largest legitimate enum you want to preserve.
+	// crosses this absolute bound, regardless of ratio. Values above 1420 are
+	// clamped because the fixed 256-bit sketch cannot estimate them precisely.
 	DistinctLimit uint16
 	// HeavyHitterMin protects frequent literals in an otherwise high-card
 	// position from being masked.
@@ -63,8 +71,6 @@ func DefaultConfig() Config {
 		DropParams: []string{
 			"utm_*", "gclid", "dclid", "fbclid", "msclkid", "_ga",
 			"session*", "token", "auth_token",
-			"fbbaid", "bbaid", "gad_*", "gbraid", "eff_*", "rtg", "awc",
-			"sym_*", "xtatc", "gref", "referrer", "csp", "frz-*",
 		},
 		Seed: defaultSeed,
 	}
@@ -156,11 +162,15 @@ func New(cfg Config) *Clusterer {
 	if cfg.MinSamples == 0 {
 		cfg.MinSamples = defaults.MinSamples
 	}
-	if cfg.HighCardRatio <= 0 || cfg.HighCardRatio > 1 {
+	if math.IsNaN(cfg.HighCardRatio) || cfg.HighCardRatio <= 0 {
 		cfg.HighCardRatio = defaults.HighCardRatio
+	} else if cfg.HighCardRatio > 1 {
+		cfg.HighCardRatio = 1
 	}
 	if cfg.DistinctLimit == 0 {
 		cfg.DistinctLimit = defaults.DistinctLimit
+	} else if cfg.DistinctLimit > maxDistinctLimit {
+		cfg.DistinctLimit = maxDistinctLimit
 	}
 	if cfg.HeavyHitterMin == 0 {
 		cfg.HeavyHitterMin = defaults.HeavyHitterMin
@@ -204,10 +214,12 @@ func (c *Clusterer) Normalize(dst, raw []byte) []byte {
 	return c.normalize(dst, raw, !c.frozen)
 }
 
-// Apply appends raw's normalized template to dst without learning from raw or
-// mutating any cache state. Use it for a stable, repeatable pass once the model
-// has been trained (typically after [Clusterer.Freeze]). If raw maps to a
-// bucket that was never learned, only stateless (class-based) masking applies.
+// Apply appends raw's normalized template to dst without changing learned
+// decisions or LRU ordering. Use it for a stable, repeatable pass once the
+// model has been trained (typically after [Clusterer.Freeze]). It still updates
+// service counters and reuses scratch memory, so a Clusterer is not safe for
+// concurrent Apply calls. If raw maps to a bucket that was never learned, only
+// stateless (class-based) masking applies.
 func (c *Clusterer) Apply(dst, raw []byte) []byte {
 	return c.normalize(dst, raw, false)
 }
@@ -259,15 +271,16 @@ func (c *Clusterer) Stats() Stats {
 }
 
 // Sharded holds a fixed set of independent [Clusterer] instances for
-// lock-free parallel processing. A single dispatcher goroutine calls
-// [Sharded.Shard] to pick a shard for each URL, then hands the URL to the one
-// worker goroutine that owns that shard via [Sharded.At]. Because routing is by
-// structural signature, all URLs of the same shape always land on the same
-// shard, so per-shard models stay coherent.
+// shared-nothing parallel processing. Dispatchers call [Sharded.Shard] to pick
+// a shard for each URL, then hand the URL to the one worker goroutine that owns
+// that shard via [Sharded.At]. Because routing is by structural signature, all
+// URLs of the same shape always land on the same shard, so per-shard models
+// stay coherent.
 type Sharded struct {
 	shards          []*Clusterer
 	seed            uint64
 	signaturePrefix int
+	scratch         sync.Pool
 }
 
 // NewSharded returns a Sharded with n independent Clusterers, each configured
@@ -286,7 +299,14 @@ func NewSharded(n int, cfg Config) *Sharded {
 	} else if prefix < 0 {
 		prefix = 0
 	}
-	s := &Sharded{shards: make([]*Clusterer, n), seed: cfg.Seed, signaturePrefix: prefix}
+	s := &Sharded{
+		shards:          make([]*Clusterer, n),
+		seed:            cfg.Seed,
+		signaturePrefix: prefix,
+		scratch: sync.Pool{New: func() any {
+			return new(parsedURL)
+		}},
+	}
 	for i := range s.shards {
 		s.shards[i] = New(cfg)
 	}
@@ -297,10 +317,14 @@ func NewSharded(n int, cfg Config) *Sharded {
 // only on raw's structural signature, so identical shapes route consistently.
 // Shard is safe for concurrent use.
 func (s *Sharded) Shard(raw []byte) int {
-	var parsed parsedURL
-	parseURL(raw, &parsed)
-	analyzeParsed(&parsed, s.seed, false)
-	return int(structuralSignature(&parsed, s.seed, s.signaturePrefix) % uint64(len(s.shards)))
+	parsed := s.scratch.Get().(*parsedURL)
+	parseURL(raw, parsed)
+	analyzeParsed(parsed, s.seed, false)
+	shard := int(structuralSignature(parsed, s.seed, s.signaturePrefix) % uint64(len(s.shards)))
+	// Do not retain caller-owned URL buffers through the pool.
+	parsed.raw = nil
+	s.scratch.Put(parsed)
+	return shard
 }
 
 // At returns the Clusterer for the given shard index, as returned by

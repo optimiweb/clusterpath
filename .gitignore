@@ -1,4 +1,4 @@
-# Generated synthetic datasets (reproducible via scripts/genurls.go)
+# Generated synthetic datasets
 synthetic_*.paths
 
 # CLI / demo outputs
